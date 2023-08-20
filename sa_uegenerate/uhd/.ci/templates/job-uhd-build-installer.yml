@@ -1,0 +1,115 @@
+parameters:
+- name: 'toolset'
+  type: string
+  values:
+  - fedora_rpm
+  - make
+  - msbuild
+  - msbuild_python
+  - ubuntu_deb
+- name: 'installer'
+  type: string
+  values:
+  - rpm # fedora_rpm
+  - tar # make
+  - nsis # msbuild
+  - deb # ubuntu_deb
+- name: releaseBinaries
+  type: boolean
+  default: false
+
+jobs:
+- job: build_uhd_installer_${{ parameters.toolset }}
+  displayName: ${{ parameters.toolset }} UHD installer
+  dependsOn: get_latest_uhd_docker
+  variables:
+    # Docker vars from job-get-latest-uhd-docker.yml
+    dockerBuildNumber: $[ dependencies.get_latest_uhd_docker.outputs['setDockerVar.dockerBuildNumber'] ]
+    dockerImagePrefix: $[ dependencies.get_latest_uhd_docker.outputs['setDockerVar.dockerImagePrefix'] ]
+    dockerImageMatrixLin: $[ dependencies.get_latest_uhd_docker.outputs['setDockerVar.dockerImageMatrixLin'] ]
+    dockerImageMatrixWin: $[ dependencies.get_latest_uhd_docker.outputs['setDockerVar.dockerImageMatrixWin'] ]
+    dockerImageMatrixUbuntuDeb: $[ dependencies.get_latest_uhd_docker.outputs['setDockerVar.dockerImageMatrixUbuntuDeb'] ]
+    macOSBuilders: $[ dependencies.get_latest_uhd_docker.outputs['setDockerVar.macOSBuilders'] ]
+    dockerImageMatrixSourcePackageBuilders: $[ dependencies.get_latest_uhd_docker.outputs['setDockerVar.dockerImageMatrixSourcePackageBuilders'] ]
+    dockerImageMatrixFedoraRpm: $[ dependencies.get_latest_uhd_docker.outputs['setDockerVar.dockerImageMatrixFedoraRpm'] ]
+    dockerImageMatrixWinPythonBuild: $[ dependencies.get_latest_uhd_docker.outputs['setDockerVar.dockerImageMatrixWinPythonBuild'] ]
+  pool:
+    ${{ if contains(parameters.toolset, 'msbuild') }}:
+      name: de-dre-lab
+    ${{ if not(contains(parameters.toolset, 'msbuild')) }}:
+      name: Drivers-NIBuildFarm-RFMIBUILD
+    demands:
+      - docker
+      - ${{ if contains(parameters.toolset, 'msbuild') }}:
+        - Agent.OS -equals Windows_NT
+        - rfsdr-build
+      - ${{ if not(contains(parameters.toolset, 'msbuild')) }}:
+        - Agent.OS -equals Linux
+  workspace:
+    clean: outputs
+  strategy:
+    ${{ if and(eq(parameters.toolset, 'make'), eq(parameters.installer, 'tarball')) }}:
+      matrix: $[ variables.dockerImageMatrixLin ]
+    ${{ if and(eq(parameters.toolset, 'msbuild'), eq(parameters.installer, 'nsis')) }}:
+      matrix: $[ variables.dockerImageMatrixWin ]
+    ${{ if and(eq(parameters.toolset, 'msbuild_python'), eq(parameters.installer, 'nsis')) }}:
+      matrix: $[ variables.dockerImageMatrixWinPythonBuild ]
+    ${{ if and(eq(parameters.toolset, 'ubuntu_deb'), eq(parameters.installer, 'deb')) }}:
+      matrix: $[ variables.dockerImageMatrixUbuntuDeb ]
+    ${{ if and(eq(parameters.toolset, 'fedora_rpm'), eq(parameters.installer, 'rpm')) }}:
+      matrix: $[ variables.dockerImageMatrixFedoraRpm ]
+  container:
+    image: '$(dockerImagePrefix)$(DockerImageName):$(dockerBuildNumber)'
+    endpoint: 'niartifacts.jfrog.io'
+    ${{ if eq(parameters.toolset, 'ubuntu_deb') }}:
+      #pbuilder requires access to /proc
+      options: --privileged
+  steps:
+  - checkout: self
+    clean: true
+
+  - download: uhd_build_docker_container
+  - ${{ if eq(parameters.toolset, 'fedora_rpm') }}:
+    - template: steps-build-uhd-installer-fedora-rpm.yml
+      parameters:
+        uhdSrcDir: $(Build.SourcesDirectory)
+        uhdBuildDir: $(Build.BinariesDirectory)/uhddev/build
+        uhdInstallerDir: $(Build.BinariesDirectory)/uhddev-installer
+        fedoraReleaseName: $(fedoraReleaseName)
+        releaseBinaries: ${{ parameters.releaseBinaries }}
+  - ${{ if eq(parameters.toolset, 'ubuntu_deb') }}:
+    - template: steps-build-uhd-installer-ubuntu-deb.yml
+      parameters:
+        uhdSrcDir: $(Build.SourcesDirectory)
+        uhdInstallerDir: $(Build.BinariesDirectory)/uhddev-installer
+        ubuntuReleaseName: $(ubuntuReleaseName)
+  - ${{ if and(eq(parameters.toolset, 'msbuild'), eq(parameters.installer, 'nsis')) }}:
+    - template: steps-build-uhd-installer-msbuild-nsis.yml
+      parameters:
+        uhdSrcDir: $(Build.SourcesDirectory)
+        uhdBuildDir: $(Build.BinariesDirectory)\\uhddev\\build
+        uhdInstallerDir: $(Build.BinariesDirectory)\\uhddev-installer
+        uhdImageDir: $(Build.BinariesDirectory)\\uhd-images
+        uhdReleaseBinaries: ${{ parameters.releaseBinaries }}
+        cmakeCompiler: $(cmakeCompiler)
+        cmakeArch: $(cmakeArch)
+        vsArch: $(vsArch)
+        vsYear: $(vsYear)
+  - ${{ if and(eq(parameters.toolset, 'msbuild_python'), eq(parameters.installer, 'nsis')) }}:
+    - template: steps-build-uhd-installer-msbuild-nsis.yml
+      parameters:
+        uhdSrcDir: $(Build.SourcesDirectory)
+        uhdBuildDir: $(Build.BinariesDirectory)\\uhddev\\build
+        uhdInstallerDir: $(Build.BinariesDirectory)\\uhddev-installer
+        uhdImageDir: $(Build.BinariesDirectory)\\uhd-images
+        uhdReleaseBinaries: ${{ parameters.releaseBinaries }}
+        uhdBuildPythonAPI: True
+        cmakeCompiler: $(cmakeCompiler)
+        cmakeArch: $(cmakeArch)
+        vsArch: $(vsArch)
+        vsYear: $(vsYear)
+  - task: PublishPipelineArtifact@1
+    inputs:
+      targetPath: '$(Build.BinariesDirectory)/uhddev-installer'
+      artifactName: 'uhddev-$(buildOSName)-${{ parameters.toolset }}-${{ parameters.installer }}-installer'
+    displayName: Upload uhd installer artifact
